@@ -252,7 +252,6 @@
     (fn [_ node]
       (om/add-root! om-595-reconciler OM-595-App node))))
 
-;; ==================
 ;; OM-601
 
 (defn om-601-read
