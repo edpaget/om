@@ -15,6 +15,7 @@
   (:import [goog.debug Console]))
 
 (defonce *logger*
+
   (when ^boolean goog.DEBUG
     (.setCapturing (Console.) true)
     (glog/getLogger "om.next")))
@@ -199,7 +200,7 @@
             (some join? focus)
             (== 1 (count focus)))
      (let [[k focus'] (join-entry (first focus))
-           k (if (ident? k) (first k) k)
+           k (if (and (ident? k) (= (second k) '_)) (first k) k)
            focus'     (if (recursion? focus')
                         focus
                         focus')]
@@ -964,39 +965,38 @@
                                    (and (not (nil? class))
                                         (not recursive?))
                                    (conj class))]
-                  (prn "CLASS" class "QUERY "query)
-                  (swap! class-path->query update-in [classpath]
-                         (fnil conj #{})
-                         (query-template (focus-query rootq path) path))
+(when class
+                    (swap! class-path->query update-in [classpath]
+                      (fnil conj #{})
+                      (query-template (focus-query rootq path) path)))
                   (when-not recursive?
                     (cond
                       (vector? query)
                       (let [{props false joins true} (group-by join? query)]
-                        (prn "PROPS" props "JOINS" joins)
                         (when class
                           (swap! prop->classes
-                                 #(merge-with into %
-                                              (zipmap
-                                               (map (comp :dispatch-key parser/expr->ast) props)
-                                               (repeat #{class})))))
+                            #(merge-with into %
+                              (zipmap
+                                (map (comp :dispatch-key parser/expr->ast) props)
+                                (repeat #{class})))))
                         (doseq [join joins]
                           (let [[prop query'] (join-entry join)
                                 query'        (if (recursion? query')
                                                 query
                                                 query')]
-                            (swap! prop->classes
-                                   #(merge-with into % {prop #{class}}))
+                            (when class
+                              (swap! prop->classes
+                                #(merge-with into % {prop #{class}})))
                             (let [class' (-> query' meta :component)]
                               (build-index* class' query'
-                                            (conj path prop) classpath)))))
+                                (conj path prop) classpath)))))
 
                       ;; Union query case
                       (map? query)
                       (doseq [[prop query'] query]
-                        (prn "PROPS" props "Query" query)
                         (let [class' (-> query' meta :component)]
                           (build-index* class' query'
-                                        (conj path prop) classpath)))))))]
+                            (conj path prop) classpath)))))))]
         (build-index* class rootq [] [])
         (swap! indexes merge
                {:prop->classes     @prop->classes
