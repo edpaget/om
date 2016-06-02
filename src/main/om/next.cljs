@@ -88,7 +88,10 @@
                   (recur (zip/down loc) path)
                   (let [[k & ks] path
                         k' (expr->key node)]
-                    (if (keyword-identical? k k')
+                    (if (or (keyword-identical? k k')
+                            (and (util/ident? k)
+                                 (util/ident? k')
+                                 (keyword-identical? (first k) (first k'))))
                       (if (or (map? node)
                               (and (seq? node) (map? (first node))))
                         (let [loc'  (move-to-key (cond-> loc (seq? node) zip/down) k)
