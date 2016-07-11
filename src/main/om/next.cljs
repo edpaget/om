@@ -173,6 +173,7 @@
             (some util/join? focus)
             (== 1 (count focus)))
      (let [[k focus'] (util/join-entry (first focus))
+           k (if (and (util/ident? k) (= '_ (second k))) (first k) k)
            focus'     (if (util/recursion? focus')
                         focus
                         focus')]
