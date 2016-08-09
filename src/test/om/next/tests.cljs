@@ -180,6 +180,14 @@
     (is (= bq2 '[{:foo [(:bar {:a 1}) :b]} (:test {:a 1, :b 2})]))
     (is (not (nil? (-> bq2 first meta))))))
 
+(deftest test-om-727
+  (let [data {:item [:bar 0]
+              :bar    {0 {:id 0 :next [:bar 1]}
+                             1 {:id 1 :next [:bar 2]}
+                             2 {:id 2}}}]
+    (is (= (om/db->tree [{:item {:foo [:id] :bar [:id {:next '...}]}}] data data)
+           {:item {:id 0, :next {:id 1, :next {:id 2}}}}))))
+
 ;; -----------------------------------------------------------------------------
 ;; Query Templating
 
@@ -634,7 +642,29 @@
         props []
         (:dashboard/items props) [:dashboard/items]
         (-> props :dashboard/items first) [:dashboard/items 0]
-        (-> props :dashboard/items second) [:dashboard/items 1])))
+        (-> props :dashboard/items second) [:dashboard/items 1]))
+    ;; test union query inference
+    (let [x {:data {:foo {:some/key 42}}}
+          q [{:data {:branch/foo [{:foo [:some/key]} :qux]
+                     :branch/bar [:bar :baz]}}]
+          props (parser/path-meta x [] q)]
+      (is (= props x))
+      (are [x path] (= (-> x meta :om-path) path)
+        props []
+        (:data props) [:data]
+        (-> props :data :foo) [:data :foo]))
+    (let [x {:data {:foo {:some/key 42}
+                    :bar 43
+                    :baz 44}}
+          q [{:data {:branch/one [{:foo [:some/key]} :bar :baz :other]
+                     :branch/two [:foo :bar :baz :qux :one/more]
+                     :branch/three [{:foo [:some/key]} :bar :baz]}}]
+          props (parser/path-meta x [] q)]
+      (is (= props x))
+      (are [x path] (= (-> x meta :om-path) path)
+        props []
+        (:data props) [:data]
+        (-> props :data :foo) [:data :foo])))
   (testing "recursive queries"
     (let [x {:tree {:node-value 1
                     :children [{:node-value 2
@@ -1733,6 +1763,69 @@
           :post/by-id {1 {:user {:username "Bob Smith"},
                           :content "Hello World!", :id 1}},
           :om.next/tables #{:post/by-id}})))
+
+(deftest test-om-637
+  (let [data {:some/list [[:item/by-id 1]]
+              :item/by-id {1 {:id 1
+                              :name "foo"}}}]
+    (is (= (om/db->tree '[{:some/list [*]}] data data)
+           {:some/list [{:id 1, :name "foo"}]})))
+  (is (= (om/db->tree '[[:my-route _]] {:my-route [:some-route]} {:my-route [:some-route]})
+         {:my-route [:some-route]}))
+  (is (= (om/db->tree '[[:my-route _]] {:my-route [:some-route :other-key]} {:my-route [:some-route :other-key]})
+         {:my-route [:some-route :other-key]}))
+  (let [data {:todos/list [[:todo/by-id 42]]
+              :todo/by-id {42 {:id 42
+                               :states [:archived]}}}]
+    (is (= (om/db->tree [{:todos/list [:id :states]}] data data)
+           {:todos/list [{:id 42, :states [:archived]}]})))
+  (let [data {:todos/list [[:todo/by-id 42]]
+              :todo/by-id {42 {:id 42
+                               :states [:done :archived]}}
+              :current-users [{:id 0 :name "John"} {:id 1 :name "Mary"}]}]
+    (is (= (om/db->tree [{:todos/list [:id :states '[:current-users _]]}] data data)
+           {:todos/list [{:id 42, :states [:done :archived]
+                          :current-users [{:id 0 :name "John"}
+                                          {:id 1, :name "Mary"}]}]})))
+  (let [data {:todos/list [{:id 42 :title "do stuff" :states [:done :archived]}
+                           {:id 43 :title "buy milk" :states [:done :archived]}]}]
+    (is (= (om/db->tree [{:todos/list [:id :title]}] data data)
+           {:todos/list [{:id 42 :title "do stuff"}
+                         {:id 43 :title "buy milk"}]}))))
+
+(deftest test-om-604
+  (let [data {:items [[:by-id 1]]
+              :by-id {1 {:id 1
+                         :stuff [{:name "something"}]}}}]
+    (is (= (om/db->tree [{:items [:id {:stuff [:name]}]}] data data)
+           {:items [{:id 1, :stuff [{:name "something"}]}]})))
+  (let [data {:todos/list [{:id 42
+                            :author {:first-name "John"
+                                     :last-name "Smith"}
+                            :states [:done :archived]}
+                           {:id 43
+                            :author {:first-name "Mary"
+                                     :last-name "Brown"}
+                            :states [:done :archived]}]}]
+    (is (= (om/db->tree [{:todos/list [:id {:author [:first-name]}]}] data data)
+           {:todos/list [{:id 42 :author {:first-name "John"}}
+                         {:id 43 :author {:first-name "Mary"}}]})))
+  (let [data {:items [[:by-id 1]]
+              :by-id {1 {:id 1
+                         :stuff [{:name {:first "John" :last "Smith"}}]}}}]
+    (is (= (om/db->tree [{:items [:id {:stuff [{:name [:first]}]}]}] data data)
+          {:items [{:id 1, :stuff [{:name {:first "John"}}]}]}))
+    (is (= (om/db->tree [{:items [:id {:stuff ['({:name [:first]} {:param 1})]}]}] data data)
+          {:items [{:id 1, :stuff [{:name {:first "John"}}]}]}))))
+
+(deftest test-om-732
+  (let [state {:curr-view [:main :view]
+               :main {:view {:curr-item [[:sub-item/by-id 2]]}}
+               :sub-item/by-id {2 {:foo :baz :sub-items [[:sub-item/by-id 4]]}
+                                4 {:foo :bar}}}]
+    (is (= (om/db->tree [{:curr-view
+                          {:main [{:curr-item [:foo {:sub-items '...}]}]}}] state state)
+          {:curr-view {:curr-item [{:foo :baz :sub-items [{:foo :bar}]}]}}))))
 
 ;; -----------------------------------------------------------------------------
 ;; Union Migration

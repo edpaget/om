@@ -1,4 +1,4 @@
-(defproject edpaget/om "1.0.0-alpha39-SNAPSHOT"
+(defproject edpaget/om "1.0.0-alpha42-SNAPSHOT"
   :description "ClojureScript interface to Facebook's React"
   :url "http://github.com/swannodette/om"
   :license {:name "Eclipse"
@@ -15,8 +15,8 @@
                   :exclusions [org.clojure/tools.reader org.clojure/data.json]]
                  [org.clojure/tools.reader "1.0.0-beta1" :scope "provided"]
                  [org.clojure/data.json "0.2.6" :scope "provided"]
-                 [cljsjs/react "15.0.1-1"]
-                 [cljsjs/react-dom "15.0.1-1"]
+                 [cljsjs/react "15.2.1-0"]
+                 [cljsjs/react-dom "15.2.1-0"]
                  [com.cognitect/transit-clj "0.8.285"]
                  [com.cognitect/transit-cljs "0.8.239"]
 

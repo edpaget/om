@@ -4,7 +4,6 @@
   (:require [goog.string :as gstring]
             [goog.object :as gobj]
             [goog.log :as glog]
-            [clojure.walk :as walk]
             [om.next.protocols :as p]
             [om.next.impl.parser :as parser]
             [om.next.cache :as c]
@@ -253,11 +252,7 @@
        {:component (type component)}))))
 
 (defn ^boolean iquery? [x]
-  (if (implements? IQuery x)
-    true
-    (when (goog/isFunction x)
-      (let [x (js/Object.create (. x -prototype))]
-        (implements? IQuery x)))))
+  (implements? IQuery x))
 
 (defn- get-class-or-instance-query
   "Return a IQuery/IParams local bound query. Works for component classes
@@ -290,7 +285,7 @@
   "Return a IQuery/IParams instance bound query. Works for component classes
    and component instances. See also om.next/full-query."
   [x]
-  (if (implements? IQuery x)
+  (when (implements? IQuery x)
     (if (component? x)
       (if-let [query-data (component->query-data x)]
         (get-component-query x query-data)
@@ -299,15 +294,7 @@
               data-path (into [] (remove number?) (path x))
               class-path-query-data (get (:class-path->query @(get-indexer r)) cp)]
           (get-indexed-query x class-path-query-data data-path)))
-      (get-class-or-instance-query x))
-    ;; in advanced, statics will get elided
-    (when (goog/isFunction x)
-      (let [y (js/Object.create (. x -prototype))]
-        (when (implements? IQuery y)
-          (let [q (query y)
-                c (-> q meta :component)]
-            (assert (nil? c) (str "Query violation, " y , " reuses " c " query"))
-            (with-meta (bind-query q (params y)) {:component x})))))))
+      (get-class-or-instance-query x))))
 
 (defn tag [x class]
   (vary-meta x assoc :component class))
@@ -831,17 +818,19 @@
 (defn- basis-t [reconciler]
   (p/basis-t reconciler))
 
+(defn- queue-render! [f]
+  (cond
+    (fn? *raf*) (*raf* f)
+
+    (not (exists? js/requestAnimationFrame))
+    (js/setTimeout f 16)
+
+    :else
+    (js/requestAnimationFrame f)))
+
 (defn schedule-render! [reconciler]
   (when (p/schedule-render! reconciler)
-    (let [f #(p/reconcile! reconciler)]
-      (cond
-        (fn? *raf*) (*raf* f)
-
-        (not (exists? js/requestAnimationFrame))
-        (js/setTimeout f 16)
-
-        :else
-        (js/requestAnimationFrame f)))))
+    (queue-render! #(p/reconcile! reconciler))))
 
 (defn schedule-sends! [reconciler]
   (when (p/schedule-sends! reconciler)
@@ -1288,20 +1277,13 @@
            (ex-info (str "No queries exist for component path " cp)
              {:type :om.next/no-queries})))))))
 
-;; for advanced optimizations
-(defn to-class [class]
-  (when-not (nil? class)
-    (if (not (implements? Ident class))
-      (js/Object.create (. class -prototype))
-      class)))
-
 (defn- normalize* [query data refs union-seen]
   (cond
     (= '[*] query) data
 
     ;; union case
     (map? query)
-    (let [class (to-class (-> query meta :component))
+    (let [class (-> query meta :component)
           ident   (when (implements? Ident class)
                   (ident class data))]
       (if-not (nil? ident)
@@ -1324,7 +1306,7 @@
                               union-seen
                               query)
                             sel)
-                  class   (to-class (-> sel meta :component))
+                  class   (-> sel meta :component)
                   v       (get data k)]
               (cond
                 ;; graph loop: db->tree leaves ident in place
@@ -1412,6 +1394,10 @@
     (map (fn [[k q]] [k (reduce-query-depth q recursion-key)]))
     (into {})))
 
+(defn- mappable-ident? [refs ident]
+  (and (util/ident? ident)
+       (contains? refs (first ident))))
+
 ;; TODO: easy to optimize
 
 (defn- denormalize*
@@ -1422,27 +1408,50 @@
    evaluated. recurse-key is key representing the current recursive query being
    evaluted."
   [query data refs map-ident idents-seen union-expr recurse-key]
-  {:pre [(map? refs)]}
   ;; support taking ident for data param
-  (let [data (loop [data data]
-               (if (util/ident? data)
+  (let [union-recur? (and union-expr recurse-key)
+        recur-ident (when union-recur?
+                      data)
+        data (loop [data data]
+               (if (mappable-ident? refs data)
                  (recur (get-in refs (map-ident data)))
                  data))]
-    (if (vector? data)
+    (cond
+      (vector? data)
       ;; join
       (let [step (fn [ident]
-                   (let [ident'       (get-in refs (map-ident ident))
-                         union-recur? (and union-expr recurse-key)
-                         query        (cond-> query
-                                        union-recur? (reduce-union-recursion-depth recurse-key))
-                         ;; also reduce query depth of union-seen, there can
-                         ;; be more union recursions inside
-                         union-seen'  (cond-> union-expr
-                                        union-recur? (reduce-union-recursion-depth recurse-key))
-                         query'       (cond-> query
-                                        (map? query) (get (first ident)))] ;; UNION
-                     (denormalize* query' ident' refs map-ident idents-seen union-seen' nil)))]
+                   (if-not (mappable-ident? refs ident)
+                     (if (= query '[*])
+                       ident
+                       (let [{props false joins true} (group-by util/join? query)
+                             props (mapv #(cond-> % (seq? %) first) props)]
+                         (loop [joins (seq joins) ret {}]
+                           (if-not (nil? joins)
+                             (let [join        (first joins)
+                                   [key sel]   (util/join-entry join)
+                                   v           (get ident key)]
+                               (recur (next joins)
+                                 (assoc ret
+                                   key (denormalize* sel v refs map-ident
+                                         idents-seen union-expr recurse-key))))
+                             (merge (select-keys ident props) ret)))))
+                     (let [ident'       (get-in refs (map-ident ident))
+                           query        (cond-> query
+                                          union-recur? (reduce-union-recursion-depth recurse-key))
+                           ;; also reduce query depth of union-seen, there can
+                           ;; be more union recursions inside
+                           union-seen'  (cond-> union-expr
+                                          union-recur? (reduce-union-recursion-depth recurse-key))
+                           query'       (cond-> query
+                                          (map? query) (get (first ident)))] ;; UNION
+                       (denormalize* query' ident' refs map-ident idents-seen union-seen' nil))))]
         (into [] (map step) data))
+
+      (and (map? query) union-recur?)
+      (denormalize* (get query (first recur-ident)) data refs map-ident
+        idents-seen union-expr recurse-key)
+
+      :else
       ;; map case
       (if (= '[*] query)
         data
@@ -1468,22 +1477,25 @@
                                     (get-in refs (map-ident key)))
                                   (get data key))
                     key         (cond-> key (util/unique-ident? key) first)
-                    v           (if (util/ident? v)
+                    v           (if (mappable-ident? refs v)
                                   (loop [v v]
                                     (let [next (get-in refs (map-ident v))]
-                                      (if (util/ident? next)
+                                      (if (mappable-ident? refs next)
                                         (recur next)
                                         (map-ident v))))
                                   v)
                     limit       (if (number? sel) sel :none)
-                    union-entry (if (util/union? join) sel union-expr)
+                    union-entry (if (util/union? join)
+                                  sel
+                                  (when recurse?
+                                    union-expr))
                     sel         (cond
                                   recurse?
                                   (if-not (nil? union-expr)
                                     union-entry
                                     (reduce-query-depth query key))
 
-                                  (and (util/ident? v)
+                                  (and (mappable-ident? refs v)
                                        (util/union? join))
                                   (get sel (first v))
 
@@ -1495,7 +1507,7 @@
                     graph-loop? (and recurse?
                                   (contains? (set (get idents-seen key)) v)
                                   (= :none limit))
-                    idents-seen (if (and (util/ident? v) recurse?)
+                    idents-seen (if (and (mappable-ident? refs v) recurse?)
                                   (-> idents-seen
                                     (update-in [key] (fnil conj #{}) v)
                                     (assoc-in [:last-ident key] v)) idents-seen)]
@@ -1521,8 +1533,10 @@
    application state in the default database format, return the tree where all
    ident links have been replaced with their original node values."
   ([query data refs]
+   {:pre [(map? refs)]}
    (denormalize* query data refs identity {} nil nil))
   ([query data refs map-ident]
+   {:pre [(map? refs)]}
    (denormalize* query data refs map-ident {} nil nil)))
 
 ;; =============================================================================
@@ -1716,7 +1730,9 @@
         (add-watch (:state config) (or target guid)
           (fn [_ _ _ _]
             (swap! state update-in [:t] inc)
-            (schedule-render! this)))
+            (if-not (iquery? root-class)
+              (queue-render! parsef)
+              (schedule-render! this))))
         (parsef)
         (when-let [sel (get-query (or (and target @ret) root-class))]
           (let [env  (to-env config)
@@ -1749,7 +1765,9 @@
 
   (schedule-render! [_]
     (if-not (:queued @state)
-      (swap! state update-in [:queued] not)
+      (do
+        (swap! state assoc :queued true)
+        true)
       false))
 
   (schedule-sends! [_]
@@ -1765,13 +1783,9 @@
           q  (:queue st)]
       (swap! state update-in [:queued] not)
       (swap! state assoc :queue [])
-      (cond
+      (if (empty? q)
         ;; TODO: need to move root re-render logic outside of batching logic
-        (empty? q) ((:render st))
-
-        (= [::skip] q) nil
-
-        :else
+        ((:render st))
         (let [cs (transduce
                    (map #(p/key->components (:indexer config) %))
                    #(into %1 %2) #{} q)

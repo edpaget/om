@@ -1,6 +1,6 @@
 (ns om.devcards.bugs
-  (:require-macros [devcards.core :refer [defcard deftest dom-node]])
-  (:require [cljs.test :refer-macros [is async]]
+  (:require [devcards.core :refer-macros [defcard deftest dom-node]]
+            [cljs.test :refer-macros [is async]]
             [om.next :as om :refer-macros [defui]]
             [om.dom :as dom]))
 
@@ -811,6 +811,69 @@
   (dom-node
     (fn [_ node]
       (om/add-root! om-679-2-reconciler OM-679-2-Tree node))))
+
+;; ==================
+;; OM-673
+
+(defui OM-673-Child
+  Object
+  (render [this]
+    (dom/div nil (-> this om/props :text))))
+
+(def om-673-child (om/factory OM-673-Child))
+
+(defui OM-673-App
+  Object
+  (render [this]
+    (dom/div nil
+      (om-673-child {:text "child 1"})
+      (om-673-child {:text "child 2"}))))
+
+(def om-673-reconciler
+  (om/reconciler {:state nil}))
+
+(defcard om-673
+  (dom-node
+    (fn [_ node]
+      (om/add-root! om-673-reconciler OM-673-App node))))
+
+;; ==================
+;; OM-734
+
+(def OM-734-state (atom nil))
+
+(defn handle-click! [c update-app-state?]
+  (om/update-state! c assoc :text (str "foo-" (+ 100 (rand-int 100))))
+  (when update-app-state?
+    (swap! OM-734-state update-in [:items] (fnil conj []) (rand-int 100))))
+
+(defui OM-734-Child
+  Object
+  (initLocalState [this]
+    {:text "foo"})
+  (render [this]
+    (dom/div nil
+      (dom/p nil (om/get-state this :text))
+      (dom/button #js {:onClick #(handle-click! this true)} "Local + global state")
+      (dom/button #js {:onClick #(handle-click! this false)} "Just local state"))))
+
+(def om-734-child (om/factory OM-734-Child))
+
+(defui OM-734-Root
+  Object
+  (render [this]
+    (let [items (:items (om/props this))]
+      (dom/div nil
+        (dom/ul nil
+          (map (partial dom/li nil) items))
+        (om-734-child)))))
+
+(def OM-734-reconciler (om/reconciler {:state OM-734-state}))
+
+(defcard om-734
+  (dom-node
+    (fn [_ node]
+      (om/add-root! OM-734-reconciler OM-734-Root node))))
 
 
 (comment
